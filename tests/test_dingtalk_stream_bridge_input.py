@@ -420,6 +420,66 @@ def test_is_terminal_snapshot_state() -> None:
     assert bridge._is_terminal_snapshot_state("RUNNING") is False
 
 
+def test_is_fresh_terminal_outcome_rejects_same_signature() -> None:
+    bridge = _load_bridge_module()
+    baseline_outcome = bridge._build_leader_outcome_signature(
+        state="STOPPED",
+        reply="old final",
+        last_summary="task_complete",
+    )
+    assert (
+        bridge._is_fresh_terminal_outcome(
+            baseline_signature="sig-1",
+            current_signature="sig-1",
+            baseline_outcome=baseline_outcome,
+            current_state="STOPPED",
+            current_reply="new final",
+            current_summary="task_complete",
+        )
+        is False
+    )
+
+
+def test_is_fresh_terminal_outcome_rejects_same_leader_outcome() -> None:
+    bridge = _load_bridge_module()
+    baseline_outcome = bridge._build_leader_outcome_signature(
+        state="STOPPED",
+        reply="old final",
+        last_summary="task_complete",
+    )
+    assert (
+        bridge._is_fresh_terminal_outcome(
+            baseline_signature="sig-1",
+            current_signature="sig-2",
+            baseline_outcome=baseline_outcome,
+            current_state="STOPPED",
+            current_reply="old final",
+            current_summary="task_complete",
+        )
+        is False
+    )
+
+
+def test_is_fresh_terminal_outcome_accepts_changed_leader_outcome() -> None:
+    bridge = _load_bridge_module()
+    baseline_outcome = bridge._build_leader_outcome_signature(
+        state="STOPPED",
+        reply="old final",
+        last_summary="task_complete",
+    )
+    assert (
+        bridge._is_fresh_terminal_outcome(
+            baseline_signature="sig-1",
+            current_signature="sig-2",
+            baseline_outcome=baseline_outcome,
+            current_state="DONE_WAITING_INPUT",
+            current_reply="FINAL_ANSWER: new final",
+            current_summary="task_complete",
+        )
+        is True
+    )
+
+
 def test_is_final_reply_ready_rejects_waiting_input_even_with_task_complete() -> None:
     bridge = _load_bridge_module()
     assert (

@@ -1386,6 +1386,41 @@ def _extract_leader_outcome(snapshot: dict[str, Any]) -> tuple[str, str, str]:
     return state, reply, last_summary
 
 
+def _build_leader_outcome_signature(
+    *,
+    state: str,
+    reply: str,
+    last_summary: str,
+) -> tuple[str, str, str]:
+    return (
+        str(state or "").strip().upper(),
+        str(reply or "").strip(),
+        str(last_summary or "").strip(),
+    )
+
+
+def _is_fresh_terminal_outcome(
+    *,
+    baseline_signature: str,
+    current_signature: str,
+    baseline_outcome: tuple[str, str, str] | None,
+    current_state: str,
+    current_reply: str,
+    current_summary: str,
+) -> bool:
+    if baseline_signature and current_signature == baseline_signature:
+        return False
+    current_outcome = _build_leader_outcome_signature(
+        state=current_state,
+        reply=current_reply,
+        last_summary=current_summary,
+    )
+    baseline_value = baseline_outcome or ("", "", "")
+    if any(baseline_value) and current_outcome == baseline_value:
+        return False
+    return True
+
+
 def _is_terminal_snapshot_state(state: str) -> bool:
     return state.strip().upper() in _TERMINAL_STATES
 
@@ -2823,6 +2858,7 @@ def main() -> int:
                 *,
                 baseline_signature: str = "",
                 last_seen_signature: str = "",
+                baseline_outcome: tuple[str, str, str] | None = None,
             ) -> None:
                 late_wait = max(0.0, float(args.post_timeout_final_wait_seconds))
                 if late_wait <= 0:
@@ -2847,6 +2883,7 @@ def main() -> int:
                     reasoning_min_seconds = max(1.0, float(args.reasoning_min_seconds))
                     next_reasoning_at = 0.0
                     reasoning_escalated = False
+                    stale_terminal_hint_sent = False
                     while time.monotonic() < deadline:
                         try:
                             snapshot = client.get_leader_snapshot()
@@ -3075,6 +3112,28 @@ def main() -> int:
                             time.sleep(late_poll)
                             continue
 
+                        if not _is_fresh_terminal_outcome(
+                            baseline_signature=baseline_signature,
+                            current_signature=signature,
+                            baseline_outcome=baseline_outcome,
+                            current_state=state,
+                            current_reply=reply,
+                            current_summary=last_summary,
+                        ):
+                            if not stale_terminal_hint_sent:
+                                stale_terminal_hint_sent = True
+                                self._safe_reply(
+                                    incoming=incoming,
+                                    text=(
+                                        f"question_tag={question_tag} trace_id={trace_id} task_id={task_id} state={state}\n"
+                                        "检测到终态仍是上一轮快照，已阻断旧结果回传，继续等待本轮新结果。"
+                                    ),
+                                    inbound=inbound,
+                                    tag="dispatch_late_terminal_stale_guard",
+                                )
+                            time.sleep(late_poll)
+                            continue
+
                         if reply:
                             reply_text = reply if len(reply) <= 1200 else f"{reply[:1200]}..."
                             self._safe_reply(
@@ -3131,6 +3190,7 @@ def main() -> int:
                 *,
                 baseline_signature: str = "",
                 pane_fallback_reply: str = "",
+                baseline_outcome: tuple[str, str, str] | None = None,
             ) -> None:
                 soft_wait = max(5.0, float(args.completion_wait_seconds))
                 hard_wait = max(soft_wait, float(args.completion_max_wait_seconds))
@@ -3159,6 +3219,7 @@ def main() -> int:
                 next_reasoning_at = 0.0
                 reasoning_escalated = False
                 announced_pending_ids: set[str] = set()
+                stale_terminal_hint_sent = False
                 while True:
                     now = time.monotonic()
                     if now > hard_deadline:
@@ -3196,6 +3257,7 @@ def main() -> int:
                         _schedule_late_final_push(
                             baseline_signature=baseline_signature,
                             last_seen_signature=latest_signature,
+                            baseline_outcome=baseline_outcome,
                         )
                         if float(args.post_timeout_final_wait_seconds) > 0:
                             self._safe_reply(
@@ -3274,6 +3336,14 @@ def main() -> int:
                             reply=reply,
                             last_summary=last_summary,
                             user_message=normalized_message,
+                        )
+                        and _is_fresh_terminal_outcome(
+                            baseline_signature=baseline_signature,
+                            current_signature=signature,
+                            baseline_outcome=baseline_outcome,
+                            current_state=state,
+                            current_reply=reply,
+                            current_summary=last_summary,
                         )
                     ):
                         if reply:
@@ -3516,6 +3586,28 @@ def main() -> int:
                         time.sleep(poll_seconds)
                         continue
 
+                    if not _is_fresh_terminal_outcome(
+                        baseline_signature=baseline_signature,
+                        current_signature=signature,
+                        baseline_outcome=baseline_outcome,
+                        current_state=state,
+                        current_reply=reply,
+                        current_summary=last_summary,
+                    ):
+                        if not stale_terminal_hint_sent:
+                            stale_terminal_hint_sent = True
+                            self._safe_reply(
+                                incoming=incoming,
+                                text=(
+                                    f"question_tag={question_tag} trace_id={trace_id} task_id={task_id} state={state}\n"
+                                    "检测到终态仍与基线一致，已阻断旧结果回传，继续等待本轮新结果。"
+                                ),
+                                inbound=inbound,
+                                tag="dispatch_terminal_stale_guard",
+                            )
+                        time.sleep(poll_seconds)
+                        continue
+
                     if (
                         args.enable_identity_refusal_fallback
                         and (not fallback_retried)
@@ -3620,8 +3712,18 @@ def main() -> int:
 
             try:
                 baseline_signature = ""
+                baseline_outcome: tuple[str, str, str] | None = None
                 try:
-                    baseline_signature = _snapshot_signature(client.get_leader_snapshot())
+                    baseline_snapshot = client.get_leader_snapshot()
+                    baseline_signature = _snapshot_signature(baseline_snapshot)
+                    baseline_state, baseline_reply, baseline_summary = _extract_leader_outcome(
+                        baseline_snapshot
+                    )
+                    baseline_outcome = _build_leader_outcome_signature(
+                        state=baseline_state,
+                        reply=baseline_reply,
+                        last_summary=baseline_summary,
+                    )
                 except Exception as baseline_exc:  # noqa: BLE001
                     LOGGER.info(
                         "baseline_snapshot_unavailable trace_id=%s msg_id=%s chat_id=%s err=%s",
@@ -3663,37 +3765,53 @@ def main() -> int:
                     )
                     return
                 if pane_fallback_reply and int(args.progress_push_count) <= 0:
-                    reply_text = (
-                        pane_fallback_reply
-                        if len(pane_fallback_reply) <= 1200
-                        else f"{pane_fallback_reply[:1200]}..."
-                    )
-                    self._safe_reply(
-                        incoming=incoming,
-                        text=(
-                            f"question_tag={question_tag} trace_id={trace_id} task_id={task_id} "
-                            "final_state=PANE_SIGNAL_FASTPATH\n"
-                            f"最终回复（终端回显快速回传）：\n{reply_text}"
-                        ),
-                        inbound=inbound,
-                        tag="dispatch_final_result_fastpath",
-                    )
-                    self._reply_multimodal_results(
-                        incoming=incoming,
-                        inbound=inbound,
-                        metadata_payload=metadata_payload,
-                        final_reply=reply_text,
-                        question_tag=question_tag,
-                        trace_id=trace_id,
-                        task_id=task_id,
-                        tag_prefix="dispatch_final_result_fastpath",
-                    )
-                    return
+                    baseline_reply = ""
+                    if baseline_outcome:
+                        baseline_reply = str(baseline_outcome[1] or "").strip()
+                    pane_reply = str(pane_fallback_reply or "").strip()
+                    if baseline_reply and pane_reply and pane_reply == baseline_reply:
+                        self._safe_reply(
+                            incoming=incoming,
+                            text=(
+                                f"question_tag={question_tag} trace_id={trace_id} task_id={task_id}\n"
+                                "检测到终端回显与基线一致，已忽略快速终态并继续等待本轮结果。"
+                            ),
+                            inbound=inbound,
+                            tag="dispatch_fastpath_stale_guard",
+                        )
+                    else:
+                        reply_text = (
+                            pane_fallback_reply
+                            if len(pane_fallback_reply) <= 1200
+                            else f"{pane_fallback_reply[:1200]}..."
+                        )
+                        self._safe_reply(
+                            incoming=incoming,
+                            text=(
+                                f"question_tag={question_tag} trace_id={trace_id} task_id={task_id} "
+                                "final_state=PANE_SIGNAL_FASTPATH\n"
+                                f"最终回复（终端回显快速回传）：\n{reply_text}"
+                            ),
+                            inbound=inbound,
+                            tag="dispatch_final_result_fastpath",
+                        )
+                        self._reply_multimodal_results(
+                            incoming=incoming,
+                            inbound=inbound,
+                            metadata_payload=metadata_payload,
+                            final_reply=reply_text,
+                            question_tag=question_tag,
+                            trace_id=trace_id,
+                            task_id=task_id,
+                            tag_prefix="dispatch_final_result_fastpath",
+                        )
+                        return
                 last_signature = _push_followup_snapshots(baseline_signature)
                 _push_final_result(
                     last_signature,
                     baseline_signature=baseline_signature,
                     pane_fallback_reply=pane_fallback_reply,
+                    baseline_outcome=baseline_outcome,
                 )
             except LeaderCommandTimeout as exc:
                 LOGGER.warning(
@@ -3713,7 +3831,11 @@ def main() -> int:
                     tag="dispatch_timeout_pending",
                 )
                 last_signature = _push_followup_snapshots(baseline_signature)
-                _push_final_result(last_signature, baseline_signature=baseline_signature)
+                _push_final_result(
+                    last_signature,
+                    baseline_signature=baseline_signature,
+                    baseline_outcome=baseline_outcome,
+                )
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception(
                     "dispatch_failed msg_id=%s chat_id=%s sender_id=%s",
