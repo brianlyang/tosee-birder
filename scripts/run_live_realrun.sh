@@ -3,7 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
-CURL_MAX_TIME_SECONDS="${FQG_LIVE_CURL_MAX_TIME_SECONDS:-90}"
+CURL_MAX_TIME_SECONDS="${FQG_LIVE_CURL_MAX_TIME_SECONDS:-20}"
+CURL_POST_MAX_TIME_SECONDS="${FQG_LIVE_POST_MAX_TIME_SECONDS:-35}"
 
 ts() {
   date '+%Y%m%d_%H%M%S'
@@ -41,7 +42,7 @@ poll_marker() {
 send_leader() {
   local payload="$1"
   local out="$2"
-  curl -sS --connect-timeout 3 --max-time "${CURL_MAX_TIME_SECONDS}" -X POST http://127.0.0.1:3001/v1/chat/leader/command \
+  curl -sS --connect-timeout 3 --max-time "${CURL_POST_MAX_TIME_SECONDS}" -X POST http://127.0.0.1:3001/v1/chat/leader/command \
     -H "Content-Type: application/json" \
     --data-binary @"${payload}" >"${out}" || {
       echo "{\"accepted\":false,\"error\":\"leader_command_curl_failed\"}" >"${out}"
