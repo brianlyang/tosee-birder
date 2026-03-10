@@ -170,11 +170,11 @@ run_step "01_py_compile" "required" \
   "${ROOT_DIR}/scripts/guarded_session_control.py" \
   "${ROOT_DIR}/scripts/run_dingtalk_stream_bridge.py" \
   "${ROOT_DIR}/scripts/watch_guarded_session.py" \
-  "${ROOT_DIR}/src/feiqiao_guard/approval_service.py" \
-  "${ROOT_DIR}/src/feiqiao_guard/chat_bridge.py" \
-  "${ROOT_DIR}/src/feiqiao_guard/dingtalk_client.py" \
-  "${ROOT_DIR}/src/feiqiao_guard/identity_router.py" \
-  "${ROOT_DIR}/src/feiqiao_guard/main.py" \
+  "${ROOT_DIR}/src/tosee_birder/approval_service.py" \
+  "${ROOT_DIR}/src/tosee_birder/chat_bridge.py" \
+  "${ROOT_DIR}/src/tosee_birder/dingtalk_client.py" \
+  "${ROOT_DIR}/src/tosee_birder/identity_router.py" \
+  "${ROOT_DIR}/src/tosee_birder/main.py" \
   "${ROOT_DIR}/tests/test_guarded_session_control.py" \
   "${ROOT_DIR}/tests/test_watchdog_auto_continue.py" \
   "${ROOT_DIR}/tests/test_approval_flow.py" \

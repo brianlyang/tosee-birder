@@ -1153,7 +1153,7 @@ def main() -> None:
     settings = load_settings()
     host = args.host or settings.host
     port = args.port or settings.port
-    uvicorn.run("feiqiao_guard.main:create_app", host=host, port=port, factory=True)
+    uvicorn.run("tosee_birder.main:create_app", host=host, port=port, factory=True)
 
 
 if __name__ == "__main__":

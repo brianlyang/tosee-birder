@@ -454,7 +454,7 @@ WorkingDirectory=/root/feiqiao-guard
 EnvironmentFile=/root/feiqiao-guard/.env
 EnvironmentFile=-/root/feiqiao-guard/.env.secrets
 Environment=PYTHONPATH=/root/feiqiao-guard/src
-ExecStart=/root/feiqiao-guard/.venv/bin/python -m uvicorn feiqiao_guard.main:create_app --factory --host 0.0.0.0 --port $SERVICE_PORT
+ExecStart=/root/feiqiao-guard/.venv/bin/python -m uvicorn tosee_birder.main:create_app --factory --host 0.0.0.0 --port $SERVICE_PORT
 Restart=always
 RestartSec=3
 

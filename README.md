@@ -19,7 +19,7 @@ python3 -m pytest -q
 
 ```bash
 cd /Users/yangxi/claude/codex_project/fqsh
-PYTHONPATH=src python3 -m feiqiao_guard --host 0.0.0.0 --port 8765
+PYTHONPATH=src python3 -m tosee_birder --host 0.0.0.0 --port 8765
 ```
 
 启动审批网关：
@@ -44,7 +44,7 @@ export FQG_CHAT_DEFAULT_VERIFY_SECONDS=8
 export FQG_CHAT_LEADER_IDENTITY_ID=feiqiao-guard-delivery-lead
 export FQG_CHAT_COLLAB_IDENTITY_ID=feiqiao-guard-collab-executor
 export FQG_DISABLE_AGENTS_ADD_DIR=0
-python3 -m feiqiao_guard
+python3 -m tosee_birder
 ```
 
 健康检查：
@@ -62,7 +62,7 @@ curl -sS http://127.0.0.1:8765/v1/approvals/<request_id>/votes
 ## Wrapper Usage
 
 ```bash
-python3 -m feiqiao_guard.wrapper --gateway-base-url http://127.0.0.1:8765 -- codex
+python3 -m tosee_birder.wrapper --gateway-base-url http://127.0.0.1:8765 -- codex
 ```
 
 Wrapper 会检测提权提示，发起审批，并在审批结果返回后自动输入：
