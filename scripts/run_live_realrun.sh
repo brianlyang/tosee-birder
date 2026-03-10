@@ -50,6 +50,26 @@ send_leader() {
     }
 }
 
+collect_delivery_from_responses() {
+  local accepted="false"
+  local state=""
+  local file=""
+  for file in "$@"; do
+    [[ -f "${file}" ]] || continue
+    local a
+    local s
+    a="$(jq -r '.accepted==true' "${file}" 2>/dev/null || echo "false")"
+    s="$(jq -r '.leader_result.delivery_state // ""' "${file}" 2>/dev/null || echo "")"
+    if [[ "${a}" == "true" ]]; then
+      accepted="true"
+      if [[ -n "${s}" && "${s}" != "null" ]]; then
+        state="${s}"
+      fi
+    fi
+  done
+  echo "${accepted}|${state}"
+}
+
 DAY="$(date +%Y-%m-%d)"
 RUN_TS="$(ts)"
 OUT="artifacts/ops/${DAY}/live_realrun_${RUN_TS}"
@@ -118,10 +138,19 @@ curl -sS --connect-timeout 3 --max-time "${CURL_MAX_TIME_SECONDS}" \
 
 HEALTH_OK="$(jq -r '.status=="ok"' "${OUT}/healthz.json")"
 ROUTE_OK="$(jq -r '.items[] | select(.identity_id=="feiqiao-guard-delivery-lead") | ((.route_status=="ok") and (.session_id!=null) and (.codex_home!=null))' "${OUT}/routes.json" | head -n1)"
-WRITE_ACCEPTED="$(jq -r '.accepted==true' "${OUT}/write_response.json")"
-WRITE_STATE="$(jq -r '.leader_result.delivery_state // ""' "${OUT}/write_response.json")"
-RECALL_ACCEPTED="$(jq -r '.accepted==true' "${OUT}/recall_response.json")"
-RECALL_STATE="$(jq -r '.leader_result.delivery_state // ""' "${OUT}/recall_response.json")"
+WRITE_DELIVERY="$(collect_delivery_from_responses \
+  "${OUT}/write_response.json" \
+  "${OUT}/write_retry_resp_1.json" \
+  "${OUT}/write_retry_resp_2.json")"
+WRITE_ACCEPTED="${WRITE_DELIVERY%%|*}"
+WRITE_STATE="${WRITE_DELIVERY#*|}"
+
+RECALL_DELIVERY="$(collect_delivery_from_responses \
+  "${OUT}/recall_response.json" \
+  "${OUT}/recall_retry_resp_1.json" \
+  "${OUT}/recall_retry_resp_2.json")"
+RECALL_ACCEPTED="${RECALL_DELIVERY%%|*}"
+RECALL_STATE="${RECALL_DELIVERY#*|}"
 RETURNS_60="$(jq -r '.returned_turns==60' "${OUT}/memory.json")"
 TIER_OK="$(jq -r '(.tier_counts.fresh==20 and .tier_counts.stable==20 and .tier_counts.archive==20)' "${OUT}/memory.json")"
 
