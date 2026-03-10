@@ -1,0 +1,16 @@
+{
+  "identities": {
+    "feiqiao-guard-delivery-lead": {
+      "session_id": "019cb379-59ff-72f1-9380-2e1b687257a6",
+      "codex_home": "/Users/yangxi/claude/codex_project/fqsh/.runtime/codex_isolated/codex_home_lead",
+      "session_name_prefix": "fqg-lead",
+      "verify_seconds": 8
+    },
+    "feiqiao-guard-collab-executor": {
+      "session_id": "02d4ad3a-bf3d-4dc6-aa5a-7fc8a74ad201",
+      "codex_home": "/Users/yangxi/claude/codex_project/fqsh/.runtime/codex_isolated/codex_home_collab",
+      "session_name_prefix": "fqg-collab",
+      "verify_seconds": 8
+    }
+  }
+}

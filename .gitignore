@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+
+# Virtual/env files
+.env
+.env.*
+.venv/
+venv/
+
+# Local runtime/state
+.runtime/
+.identity/
+
+# Generated logs / debug dumps
+*.log
+*.log.*
+firebase-debug.log
+$PF_LOG
+
+# Build / artifacts
+build/
+dist/
+*.egg-info/
+artifacts/
+resource/reports/
+resource/ops/live/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/

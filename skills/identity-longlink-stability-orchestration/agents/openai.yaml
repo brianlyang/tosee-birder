@@ -1,0 +1,4 @@
+interface:
+  display_name: "Identity Longlink Stability"
+  short_description: "Run Guixianren longlink with fail-close gates and replay evidence"
+  default_prompt: "Enforce mission/channel gates, validate stream health, run acceptance checks, and report msg_id tag traces with absolute artifact paths."

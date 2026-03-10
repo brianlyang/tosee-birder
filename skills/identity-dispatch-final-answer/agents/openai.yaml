@@ -1,0 +1,4 @@
+interface:
+  display_name: "Identity Dispatch Final"
+  short_description: "Route one real question to one identity and force final answer"
+  default_prompt: "Pin identity, attach question_tag, dispatch, track snapshot, and converge to FINAL_ANSWER."

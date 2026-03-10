@@ -1,0 +1,20 @@
+{
+  "updated_at": "2026-03-08T00:00:00+08:00",
+  "channels": [
+    {
+      "name": "n8n自动化通知机器人",
+      "mode": "webhook",
+      "status": "PAUSED",
+      "token_prefix": "0e266a46f8df1494",
+      "reason": "避免误路由到非交互机器人"
+    },
+    {
+      "name": "龟仙人",
+      "mode": "dingtalk_stream",
+      "status": "ACTIVE",
+      "client_id": "<set-via-env:FQG_DINGTALK_STREAM_CLIENT_ID>",
+      "chat_id": "<set-via-env:FQG_DINGTALK_CHAT_ID>"
+    }
+  ],
+  "hard_rule": "仅允许ACTIVE通道用于交互测试；PAUSED通道允许保留但禁止发送。"
+}

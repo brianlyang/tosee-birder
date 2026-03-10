@@ -1,0 +1,4 @@
+interface:
+  display_name: "Identity Triple Verify"
+  short_description: "Cross-verify delegated identity execution and memory learning"
+  default_prompt: "Run three-step cross verification for target identity: method output, delegated execution, memory learning."
