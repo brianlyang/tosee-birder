@@ -62,6 +62,10 @@ This skill is restricted to the `龟仙人1` channel path.
 ./scripts/local_dingtalk_tmux_stack.sh restart
 ```
 
+Guard-stability defaults:
+- Keep `FQG_STACK_GUARD_STRICT_HEALTH=0` (soft-ready mode) to avoid false kill/recreate churn.
+- If `FQG_NEW_SESSION_WARMUP_FAIL_CLOSE=1`, verify warmup marker contract is reachable before load testing.
+
 2. Verify three-plane health (local runtime)
 ```bash
 curl -fsS http://127.0.0.1:3001/healthz

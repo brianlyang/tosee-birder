@@ -71,6 +71,7 @@ STACK_PREWARM_REQUIRED="${FQG_STACK_PREWARM_REQUIRED:-0}"
 STACK_PREWARM_WAIT_SECONDS="${FQG_STACK_PREWARM_WAIT_SECONDS:-25}"
 STACK_BRIDGE_READY_WAIT_SECONDS="${FQG_STACK_BRIDGE_READY_WAIT_SECONDS:-20}"
 STACK_FORCE_RESET_GUARD_SERVER_ON_START="${FQG_STACK_FORCE_RESET_GUARD_SERVER_ON_START:-1}"
+STACK_GUARD_STRICT_HEALTH="${FQG_STACK_GUARD_STRICT_HEALTH:-0}"
 PYTHON_BIN=""
 
 ensure_dirs() {
@@ -253,6 +254,20 @@ guard_session_healthy() {
   return 1
 }
 
+guard_session_soft_ready() {
+  local guard_socket="$1"
+  local guard_session="$2"
+  local pane_info pane_dead pane_cmd
+  pane_info="$(tmux -S "${guard_socket}" list-panes -t "${guard_session}" -F '#{pane_dead} #{pane_current_command}' 2>/dev/null | head -n 1 || true)"
+  pane_dead="$(echo "${pane_info}" | awk '{print $1}')"
+  pane_cmd="$(echo "${pane_info}" | awk '{print $2}')"
+  if [[ "${pane_dead}" != "0" ]]; then
+    return 1
+  fi
+  [[ -n "${pane_cmd}" ]] || return 1
+  return 0
+}
+
 prewarm_guard_session() {
   local routes_path="$1"
   local route_sid route_codex_home route_prefix computed
@@ -287,7 +302,9 @@ prewarm_guard_session() {
   mkdir -p "$(dirname "${guard_socket}")"
   if tmux -S "${guard_socket}" has-session -t "${guard_session}" 2>/dev/null; then
     if ! guard_session_healthy "${guard_socket}" "${guard_session}"; then
-      tmux -S "${guard_socket}" kill-session -t "${guard_session}" >/dev/null 2>&1 || true
+      if [[ "${STACK_GUARD_STRICT_HEALTH}" == "1" ]] || ! guard_session_soft_ready "${guard_socket}" "${guard_session}"; then
+        tmux -S "${guard_socket}" kill-session -t "${guard_session}" >/dev/null 2>&1 || true
+      fi
     fi
   fi
 
@@ -299,9 +316,15 @@ prewarm_guard_session() {
   local i=0
   local wait_sec="${STACK_PREWARM_WAIT_SECONDS}"
   while [[ "${i}" -lt "${wait_sec}" ]]; do
-    if tmux -S "${guard_socket}" has-session -t "${guard_session}" 2>/dev/null && guard_session_healthy "${guard_socket}" "${guard_session}"; then
-      echo "guard_session_ready:${guard_session}@${guard_socket}"
-      return 0
+    if tmux -S "${guard_socket}" has-session -t "${guard_session}" 2>/dev/null; then
+      if guard_session_healthy "${guard_socket}" "${guard_session}"; then
+        echo "guard_session_ready:${guard_session}@${guard_socket}"
+        return 0
+      fi
+      if [[ "${STACK_GUARD_STRICT_HEALTH}" != "1" ]] && guard_session_soft_ready "${guard_socket}" "${guard_session}"; then
+        echo "guard_session_ready_soft:${guard_session}@${guard_socket}"
+        return 0
+      fi
     fi
     sleep 1
     i=$((i + 1))
@@ -524,6 +547,7 @@ Environment overrides:
   FQG_STACK_PREWARM_REQUIRED (default: 0; set 1 to fail-close on prewarm failure)
   FQG_STACK_PREWARM_WAIT_SECONDS (default: 25)
   FQG_STACK_BRIDGE_READY_WAIT_SECONDS (default: 20)
+  FQG_STACK_GUARD_STRICT_HEALTH (default: 0; set 1 to keep strict pane command gating)
   FQG_STACK_FORCE_RESET_GUARD_SERVER_ON_START (default: 1; restart/start only)
   prewarm: ensure leader guard tmux/codex session is alive without restarting api/bridge
 EOF
