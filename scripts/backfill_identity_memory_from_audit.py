@@ -12,7 +12,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from feiqiao_guard.identity_memory import IdentityMemoryStore  # noqa: E402
+from tosee_birder.identity_memory import IdentityMemoryStore  # noqa: E402
 
 
 def _iter_jsonl(path: Path) -> list[dict[str, Any]]:

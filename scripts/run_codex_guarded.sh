@@ -141,7 +141,7 @@ for raw_name in "${passthrough_names[@]}"; do
 done
 
 exec env -i "${env_args[@]}" \
-  "${PYTHON_BIN}" -m feiqiao_guard.wrapper \
+  "${PYTHON_BIN}" -m tosee_birder.wrapper \
   --gateway-base-url "${GATEWAY_URL}" \
   -- \
   "${CODEX_BIN}" "${CODEX_EXTRA_ARGS[@]}" "$@"

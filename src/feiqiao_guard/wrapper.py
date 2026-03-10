@@ -737,7 +737,10 @@ def main() -> None:
     if command_argv and command_argv[0] == "--":
         command_argv = command_argv[1:]
     if not command_argv:
-        raise SystemExit("usage: python -m feiqiao_guard.wrapper -- <command> [args...]")
+        raise SystemExit(
+            "usage: python -m tosee_birder.wrapper -- <command> [args...] "
+            "(compat: python -m feiqiao_guard.wrapper -- <command> [args...])"
+        )
 
     config = WrapperConfig(
         gateway_base_url=args.gateway_base_url.rstrip("/"),

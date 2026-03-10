@@ -24,7 +24,7 @@ SRC_DIR = ROOT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from feiqiao_guard.chat_bridge import (  # noqa: E402
+from tosee_birder.chat_bridge import (  # noqa: E402
     ApprovalCommand,
     BridgePolicy,
     InboundChatMessage,
