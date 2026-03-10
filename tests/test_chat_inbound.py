@@ -12,7 +12,12 @@ from feiqiao_guard.config import Settings
 from feiqiao_guard.main import create_app
 
 
-def _settings(tmp_path: Path, routes_path: Path) -> Settings:
+def _settings(
+    tmp_path: Path,
+    routes_path: Path,
+    *,
+    queue_fail_close_unconfirmed: bool = False,
+) -> Settings:
     return Settings(
         host="127.0.0.1",
         port=8765,
@@ -34,6 +39,7 @@ def _settings(tmp_path: Path, routes_path: Path) -> Settings:
         identity_routes_path=routes_path,
         chat_control_timeout_seconds=10,
         chat_default_verify_seconds=8,
+        chat_queue_retry_fail_close_unconfirmed=queue_fail_close_unconfirmed,
     )
 
 
@@ -648,7 +654,7 @@ def test_leader_command_fails_when_queued_retry_turns_failed(tmp_path: Path) -> 
     assert leader_sid in calls[1]
 
 
-def test_leader_command_fails_when_queued_retry_stays_unconfirmed(tmp_path: Path) -> None:
+def test_leader_command_soft_queues_when_retry_stays_unconfirmed_by_default(tmp_path: Path) -> None:
     routes_path = tmp_path / "identity_routes.json"
     leader_sid = "11111111-1111-4111-8111-111111111111"
     leader_home = str(tmp_path / "codex-home-lead")
@@ -701,6 +707,85 @@ def test_leader_command_fails_when_queued_retry_stays_unconfirmed(tmp_path: Path
     main_module.subprocess.run = _stub_run
     try:
         app = create_app(_settings(tmp_path, routes_path))
+        with TestClient(app) as client:
+            resp = client.post(
+                "/v1/chat/leader/command",
+                json={"message": "继续执行", "auto_collab": False},
+            )
+            assert resp.status_code == 200
+            payload = resp.json()
+            assert payload["accepted"] is True
+            assert payload["leader_result"]["delivery_state"] == "queued"
+            assert payload["leader_result"]["control_result"]["queued_retry_unconfirmed"] is True
+            notes = payload["orchestration_notes"]
+            assert "leader_queued_retry:first=queued->retry=queued;soft_queued=retry_still_unconfirmed" in notes
+            assert "leader_delivery_state=queued" in notes
+            assert "collab_disabled" in notes
+    finally:
+        main_module.subprocess.run = original_run
+
+    assert len(calls) == 2
+    assert leader_sid in calls[0]
+    assert leader_sid in calls[1]
+
+
+def test_leader_command_hard_fails_when_unconfirmed_and_strict_mode_enabled(tmp_path: Path) -> None:
+    routes_path = tmp_path / "identity_routes.json"
+    leader_sid = "11111111-1111-4111-8111-111111111111"
+    leader_home = str(tmp_path / "codex-home-lead")
+    _write_routes(
+        routes_path,
+        {
+            "identities": {
+                "feiqiao-guard-delivery-lead": {
+                    "session_id": leader_sid,
+                    "codex_home": leader_home,
+                    "session_name_prefix": "leader",
+                }
+            }
+        },
+    )
+
+    calls: list[list[str]] = []
+    call_payloads = [
+        {
+            "ok": False,
+            "session_id": leader_sid,
+            "codex_home": leader_home,
+            "action": "tmux_send_keys",
+            "tmux_returncode": 0,
+            "rollout_advanced": False,
+        },
+        {
+            "ok": False,
+            "session_id": leader_sid,
+            "codex_home": leader_home,
+            "action": "tmux_send_keys",
+            "tmux_returncode": 0,
+            "rollout_advanced": False,
+        },
+    ]
+
+    def _stub_run(cmd, capture_output, text, timeout):  # noqa: ANN001
+        calls.append(list(cmd))
+        payload = call_payloads[len(calls) - 1]
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=1,
+            stdout=json.dumps(payload, ensure_ascii=False),
+            stderr="",
+        )
+
+    original_run = main_module.subprocess.run
+    main_module.subprocess.run = _stub_run
+    try:
+        app = create_app(
+            _settings(
+                tmp_path,
+                routes_path,
+                queue_fail_close_unconfirmed=True,
+            )
+        )
         with TestClient(app) as client:
             resp = client.post(
                 "/v1/chat/leader/command",

@@ -385,14 +385,14 @@ def _define_args() -> argparse.Namespace:
     parser.add_argument(
         "--verify-seconds",
         type=float,
-        default=float(os.getenv("FQG_BRIDGE_VERIFY_SECONDS", "6")),
-        help="verify_seconds for leader dispatch (default: 6)",
+        default=float(os.getenv("FQG_BRIDGE_VERIFY_SECONDS", "12")),
+        help="verify_seconds for leader dispatch (default: 12)",
     )
     parser.add_argument(
         "--collab-verify-seconds",
         type=float,
-        default=float(os.getenv("FQG_BRIDGE_COLLAB_VERIFY_SECONDS", "6")),
-        help="collab_verify_seconds (default: 6)",
+        default=float(os.getenv("FQG_BRIDGE_COLLAB_VERIFY_SECONDS", "12")),
+        help="collab_verify_seconds (default: 12)",
     )
     parser.add_argument(
         "--dedupe-file",
@@ -4082,6 +4082,7 @@ def main() -> int:
     LOGGER.info(
         (
             "bridge_started base_url=%s require_at=%s require_prefix=%s auto_collab=%s "
+            "verify_seconds=%s collab_verify_seconds=%s "
             "followup_seconds=%s progress_push_count=%s completion_wait_seconds=%s completion_poll_seconds=%s completion_max_wait_seconds=%s "
             "post_timeout_wait_seconds=%s post_timeout_poll_seconds=%s idle_restart_seconds=%s "
             "max_uptime_seconds=%s watchdog_check_interval_seconds=%s watchdog_grace_seconds=%s "
@@ -4095,6 +4096,8 @@ def main() -> int:
         not args.no_require_at,
         args.require_prefix,
         bool(args.auto_collab),
+        float(args.verify_seconds),
+        float(args.collab_verify_seconds),
         args.followup_seconds,
         args.progress_push_count,
         args.completion_wait_seconds,

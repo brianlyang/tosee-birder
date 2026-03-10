@@ -377,8 +377,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # the command could not be delivered. Surface failure explicitly.
             return retried, note
         if retried.delivery_state == "queued":
-            # Fail-close for "silent queued" cases where both attempts were
-            # accepted into tmux but still had no rollout advancement proof.
+            # "Silent queued" means both attempts reached tmux successfully but
+            # rollout proof did not arrive within verify windows.
             first_result = first.control_result or {}
             retried_result = retried.control_result or {}
             first_unconfirmed = (
@@ -390,19 +390,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 and not bool(retried_result.get("rollout_advanced", False))
             )
             if first_unconfirmed and retried_unconfirmed:
-                forced_failed = retried.model_copy(
+                if resolved.chat_queue_retry_fail_close_unconfirmed:
+                    forced_failed = retried.model_copy(
+                        update={
+                            "accepted": False,
+                            "delivery_state": "failed",
+                            "control_result": {
+                                **retried_result,
+                                "forced_failed_reason": "queued_retry_still_unconfirmed",
+                                "first_delivery_state": first.delivery_state,
+                                "retry_delivery_state": retried.delivery_state,
+                            },
+                        }
+                    )
+                    return forced_failed, f"{note};forced_failed=queued_retry_still_unconfirmed"
+
+                softened = retried.model_copy(
                     update={
-                        "accepted": False,
-                        "delivery_state": "failed",
+                        "accepted": True,
+                        "delivery_state": "queued",
                         "control_result": {
                             **retried_result,
-                            "forced_failed_reason": "queued_retry_still_unconfirmed",
+                            "queued_retry_unconfirmed": True,
                             "first_delivery_state": first.delivery_state,
                             "retry_delivery_state": retried.delivery_state,
                         },
                     }
                 )
-                return forced_failed, f"{note};forced_failed=queued_retry_still_unconfirmed"
+                return softened, f"{note};soft_queued=retry_still_unconfirmed"
         return first, note
 
     @app.get("/healthz")
