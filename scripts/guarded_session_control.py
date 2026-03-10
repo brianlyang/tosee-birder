@@ -217,10 +217,14 @@ def _wait_tmux_marker(
     marker: str,
     timeout_seconds: float,
     poll_interval_seconds: float = 2.0,
+    strict_line_match: bool = False,
 ) -> tuple[bool, str]:
     expected = str(marker or "").strip()
     if not expected:
         return True, ""
+    pattern = re.compile(
+        rf"(?m)^\s*{re.escape(expected)}(?:[。.!]|\u3002)?\s*$"
+    ) if strict_line_match else None
     deadline = time.monotonic() + max(1.0, float(timeout_seconds))
     last_capture = ""
     while time.monotonic() <= deadline:
@@ -231,7 +235,10 @@ def _wait_tmux_marker(
         )
         if capture:
             last_capture = capture
-        if expected in capture:
+        if pattern is not None:
+            if pattern.search(capture):
+                return True, capture
+        elif expected in capture:
             return True, capture
         time.sleep(max(0.5, float(poll_interval_seconds)))
     return False, last_capture
@@ -393,6 +400,7 @@ def _continue_once(
                 session_name=session_name,
                 marker=warmup_marker_value,
                 timeout_seconds=max(1.0, float(warmup_seconds)),
+                strict_line_match=True,
             )
             warmup_ready = bool(marker_ok)
             warmup_output = _join_output(
@@ -510,6 +518,35 @@ def _continue_once(
             )
             if advanced:
                 action = "tmux_send_keys_commit"
+
+    if not advanced:
+        # The resumed tmux/codex process can exit before rollout proof appears.
+        # Recreate once and send the task text directly to avoid losing the turn.
+        if action in {"tmux_new_resume", "tmux_restart_resume"} and not _tmux_has_session(
+            tmux_bin, socket_path, session_name
+        ):
+            fallback_used = True
+            recreate_cp = _tmux_start_resume(
+                tmux_bin,
+                root_dir=root_dir,
+                socket_path=socket_path,
+                session_name=session_name,
+                session_id=session_id,
+                text=text,
+            )
+            cp = recreate_cp
+            action = f"{action}_recreate"
+            tmux_output = _join_output(tmux_output, recreate_cp.stdout, recreate_cp.stderr)
+            if recreate_cp.returncode == 0:
+                verify_before = _capture_rollout_signature(codex_home, session_id)
+                advanced, after = _wait_rollout_advance(
+                    codex_home=codex_home,
+                    session_id=session_id,
+                    before=verify_before,
+                    timeout_seconds=max(4.0, verify_seconds),
+                )
+                if advanced:
+                    action = f"{action}_direct"
 
     if not advanced:
         pane_after = _tmux_capture_tail(tmux_bin, socket_path, session_name)
