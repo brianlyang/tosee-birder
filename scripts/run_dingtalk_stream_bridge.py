@@ -1264,6 +1264,43 @@ def _extract_pane_signal_fallback(response: dict[str, Any]) -> str:
     return candidate
 
 
+def _evaluate_dispatch_acceptance(response: dict[str, Any]) -> tuple[bool, str]:
+    accepted = bool(response.get("accepted", False))
+    if accepted:
+        return True, ""
+
+    leader_raw = response.get("leader_result")
+    leader = leader_raw if isinstance(leader_raw, dict) else {}
+    collab_raw = response.get("collab_result")
+    collab = collab_raw if isinstance(collab_raw, dict) else {}
+    notes_raw = response.get("orchestration_notes")
+    notes = notes_raw if isinstance(notes_raw, list) else []
+
+    fragments: list[str] = ["accepted=false"]
+    leader_state = str(leader.get("delivery_state", "")).strip().lower()
+    if leader_state:
+        fragments.append(f"leader_state={leader_state}")
+    elif bool(leader.get("accepted", False)) is False:
+        fragments.append("leader_accepted=false")
+
+    collab_error = str(response.get("collab_error", "")).strip()
+    if collab_error:
+        fragments.append(f"collab_error={_truncate_text(collab_error, limit=96)}")
+    elif collab:
+        collab_state = str(collab.get("delivery_state", "")).strip().lower()
+        if collab_state:
+            fragments.append(f"collab_state={collab_state}")
+        elif bool(collab.get("accepted", False)) is False:
+            fragments.append("collab_accepted=false")
+
+    if notes:
+        normalized_notes = [str(item).strip() for item in notes if str(item).strip()]
+        if normalized_notes:
+            note_preview = ";".join(normalized_notes[:2])
+            fragments.append(f"notes={_truncate_text(note_preview, limit=120)}")
+    return False, " | ".join(fragments)
+
+
 def _iso_utc(ts: float) -> str:
     return datetime.fromtimestamp(max(0.0, float(ts)), tz=timezone.utc).isoformat()
 
@@ -3610,6 +3647,21 @@ def main() -> int:
                     inbound=inbound,
                     tag="dispatch_summary",
                 )
+                dispatch_accepted, dispatch_reject_reason = _evaluate_dispatch_acceptance(response)
+                if not dispatch_accepted:
+                    self._safe_reply(
+                        incoming=incoming,
+                        text=(
+                            f"question_tag={question_tag} trace_id={trace_id} task_id={task_id}\n"
+                            "本次任务未成功受理，已停止后续状态追踪（fail-close），"
+                            "不会复用上一任务的结果。\n"
+                            f"reason={dispatch_reject_reason}\n"
+                            "请直接发送新的完整问题重试。"
+                        ),
+                        inbound=inbound,
+                        tag="dispatch_rejected_fail_close",
+                    )
+                    return
                 if pane_fallback_reply and int(args.progress_push_count) <= 0:
                     reply_text = (
                         pane_fallback_reply

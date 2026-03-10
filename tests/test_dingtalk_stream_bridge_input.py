@@ -707,6 +707,46 @@ def test_extract_pane_signal_fallback_filters_noise_and_keeps_tail() -> None:
     assert "gpt-5.3-codex" not in fallback
 
 
+def test_evaluate_dispatch_acceptance_accepts_true_response() -> None:
+    bridge = _load_bridge_module()
+    accepted, reason = bridge._evaluate_dispatch_acceptance(
+        {
+            "accepted": True,
+            "leader_result": {"accepted": True, "delivery_state": "confirmed"},
+        }
+    )
+    assert accepted is True
+    assert reason == ""
+
+
+def test_evaluate_dispatch_acceptance_exposes_failure_reason() -> None:
+    bridge = _load_bridge_module()
+    accepted, reason = bridge._evaluate_dispatch_acceptance(
+        {
+            "accepted": False,
+            "leader_result": {"accepted": False, "delivery_state": "failed"},
+            "orchestration_notes": ["leader_delivery_state=failed", "collab_result_missing"],
+        }
+    )
+    assert accepted is False
+    assert "accepted=false" in reason
+    assert "leader_state=failed" in reason
+    assert "notes=leader_delivery_state=failed;collab_result_missing" in reason
+
+
+def test_evaluate_dispatch_acceptance_includes_collab_error() -> None:
+    bridge = _load_bridge_module()
+    accepted, reason = bridge._evaluate_dispatch_acceptance(
+        {
+            "accepted": False,
+            "leader_result": {"accepted": True, "delivery_state": "confirmed"},
+            "collab_error": "404:detail=collab route missing",
+        }
+    )
+    assert accepted is False
+    assert "collab_error=404:detail=collab route missing" in reason
+
+
 def test_startup_guard_rejects_progress_push_zero_under_strict_mode(tmp_path: Path) -> None:
     bridge = _load_bridge_module()
     routes_path = tmp_path / "routes.json"
