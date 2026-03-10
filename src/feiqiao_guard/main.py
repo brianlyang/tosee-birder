@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import html
+import os
 import re
 import subprocess
 import sys
@@ -227,12 +228,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
         )
 
+        control_timeout_seconds = _compute_chat_control_timeout_seconds(
+            verify_seconds=target_verify,
+            configured_timeout_seconds=resolved.chat_control_timeout_seconds,
+        )
+
         try:
             cp = subprocess.run(
                 command,
                 capture_output=True,
                 text=True,
-                timeout=max(3, int(resolved.chat_control_timeout_seconds)),
+                timeout=control_timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
             audit.append(
@@ -242,7 +248,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "route_source": route_source,
                     "session_id": target_session_id or None,
                     "codex_home": target_codex_home or None,
-                    "timeout_seconds": int(resolved.chat_control_timeout_seconds),
+                    "timeout_seconds": control_timeout_seconds,
                 },
             )
             raise HTTPException(status_code=504, detail=f"chat_control_timeout:{exc}") from exc
@@ -900,6 +906,19 @@ def _build_decision_link(
 
 def _workspace_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _compute_chat_control_timeout_seconds(*, verify_seconds: float, configured_timeout_seconds: int) -> int:
+    base_timeout = max(3, int(configured_timeout_seconds))
+    verify_window = max(1.0, float(verify_seconds))
+    try:
+        warmup_window = max(0.0, float(os.getenv("FQG_NEW_SESSION_WARMUP_SECONDS", "0") or 0.0))
+    except ValueError:
+        warmup_window = 0.0
+
+    # Control path may include warmup + retry + rollout polling.
+    dynamic_floor = int(warmup_window + (verify_window * 3.0) + 30.0)
+    return min(900, max(base_timeout, dynamic_floor))
 
 
 def _build_chat_control_command(

@@ -43,6 +43,24 @@ def _settings(
     )
 
 
+def test_compute_chat_control_timeout_seconds_without_warmup(monkeypatch) -> None:
+    monkeypatch.delenv("FQG_NEW_SESSION_WARMUP_SECONDS", raising=False)
+    timeout = main_module._compute_chat_control_timeout_seconds(
+        verify_seconds=8.0,
+        configured_timeout_seconds=20,
+    )
+    assert timeout == 54
+
+
+def test_compute_chat_control_timeout_seconds_accounts_for_warmup(monkeypatch) -> None:
+    monkeypatch.setenv("FQG_NEW_SESSION_WARMUP_SECONDS", "120")
+    timeout = main_module._compute_chat_control_timeout_seconds(
+        verify_seconds=20.0,
+        configured_timeout_seconds=120,
+    )
+    assert timeout == 210
+
+
 def _write_routes(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
