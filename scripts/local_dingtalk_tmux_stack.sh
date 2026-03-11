@@ -29,18 +29,28 @@ fi
 
 # Guard against stale "simple mode" profiles that disable bridge self-healing.
 # Set FQG_BRIDGE_ALLOW_IDLE_RESTART_ZERO=1 only for explicit troubleshooting.
-DEFAULT_IDLE_RESTART_SECONDS="${FQG_BRIDGE_DEFAULT_IDLE_RESTART_SECONDS:-600}"
+DEFAULT_IDLE_RESTART_SECONDS="${FQG_BRIDGE_DEFAULT_IDLE_RESTART_SECONDS:-1800}"
+MIN_IDLE_RESTART_SECONDS="${FQG_BRIDGE_MIN_IDLE_RESTART_SECONDS:-1800}"
 DEFAULT_MAX_UPTIME_SECONDS="${FQG_BRIDGE_DEFAULT_MAX_UPTIME_SECONDS:-7200}"
 ALLOW_IDLE_RESTART_ZERO="${FQG_BRIDGE_ALLOW_IDLE_RESTART_ZERO:-0}"
+ALLOW_IDLE_RESTART_SHORT="${FQG_BRIDGE_ALLOW_IDLE_RESTART_SHORT:-0}"
 
 _is_non_positive_number() {
   local raw="${1:-0}"
   awk -v v="${raw}" 'BEGIN { exit !(v + 0 <= 0) }'
 }
 
+_is_less_than_number() {
+  local raw="${1:-0}"
+  local threshold="${2:-0}"
+  awk -v v="${raw}" -v t="${threshold}" 'BEGIN { exit !(v + 0 < t + 0) }'
+}
+
 if [[ "${ALLOW_IDLE_RESTART_ZERO}" != "1" ]]; then
   if [[ -z "${FQG_BRIDGE_ACTIVITY_IDLE_RESTART_SECONDS:-}" ]] || _is_non_positive_number "${FQG_BRIDGE_ACTIVITY_IDLE_RESTART_SECONDS:-0}"; then
     export FQG_BRIDGE_ACTIVITY_IDLE_RESTART_SECONDS="${DEFAULT_IDLE_RESTART_SECONDS}"
+  elif [[ "${ALLOW_IDLE_RESTART_SHORT}" != "1" ]] && _is_less_than_number "${FQG_BRIDGE_ACTIVITY_IDLE_RESTART_SECONDS:-0}" "${MIN_IDLE_RESTART_SECONDS}"; then
+    export FQG_BRIDGE_ACTIVITY_IDLE_RESTART_SECONDS="${MIN_IDLE_RESTART_SECONDS}"
   fi
 fi
 if [[ -z "${FQG_BRIDGE_FORCE_RESTART_MAX_UPTIME_SECONDS:-}" ]] || _is_non_positive_number "${FQG_BRIDGE_FORCE_RESTART_MAX_UPTIME_SECONDS:-0}"; then
@@ -57,9 +67,13 @@ ROUTES_PATH_RAW="${FQG_IDENTITY_ROUTES_PATH:-${ROOT_DIR}/.runtime/identity_route
 LEADER_ID="${FQG_CHAT_LEADER_IDENTITY_ID:-custom-creative-ecom-analyst}"
 COLLAB_ID="${FQG_CHAT_COLLAB_IDENTITY_ID:-${LEADER_ID}}"
 STACK_PREWARM_ENABLE="${FQG_STACK_PREWARM_ENABLE:-1}"
+STACK_PREWARM_REQUIRED="${FQG_STACK_PREWARM_REQUIRED:-0}"
 STACK_PREWARM_WAIT_SECONDS="${FQG_STACK_PREWARM_WAIT_SECONDS:-25}"
 STACK_BRIDGE_READY_WAIT_SECONDS="${FQG_STACK_BRIDGE_READY_WAIT_SECONDS:-20}"
 STACK_FORCE_RESET_GUARD_SERVER_ON_START="${FQG_STACK_FORCE_RESET_GUARD_SERVER_ON_START:-1}"
+STACK_GUARD_STRICT_HEALTH="${FQG_STACK_GUARD_STRICT_HEALTH:-0}"
+LOCAL_STACK_REQUEST_WARMUP_SECONDS="${FQG_LOCAL_STACK_REQUEST_WARMUP_SECONDS:-0}"
+LOCAL_STACK_REQUEST_WARMUP_FAIL_CLOSE="${FQG_LOCAL_STACK_REQUEST_WARMUP_FAIL_CLOSE:-0}"
 PYTHON_BIN=""
 
 ensure_dirs() {
@@ -242,6 +256,20 @@ guard_session_healthy() {
   return 1
 }
 
+guard_session_soft_ready() {
+  local guard_socket="$1"
+  local guard_session="$2"
+  local pane_info pane_dead pane_cmd
+  pane_info="$(tmux -S "${guard_socket}" list-panes -t "${guard_session}" -F '#{pane_dead} #{pane_current_command}' 2>/dev/null | head -n 1 || true)"
+  pane_dead="$(echo "${pane_info}" | awk '{print $1}')"
+  pane_cmd="$(echo "${pane_info}" | awk '{print $2}')"
+  if [[ "${pane_dead}" != "0" ]]; then
+    return 1
+  fi
+  [[ -n "${pane_cmd}" ]] || return 1
+  return 0
+}
+
 prewarm_guard_session() {
   local routes_path="$1"
   local route_sid route_codex_home route_prefix computed
@@ -276,7 +304,9 @@ prewarm_guard_session() {
   mkdir -p "$(dirname "${guard_socket}")"
   if tmux -S "${guard_socket}" has-session -t "${guard_session}" 2>/dev/null; then
     if ! guard_session_healthy "${guard_socket}" "${guard_session}"; then
-      tmux -S "${guard_socket}" kill-session -t "${guard_session}" >/dev/null 2>&1 || true
+      if [[ "${STACK_GUARD_STRICT_HEALTH}" == "1" ]] || ! guard_session_soft_ready "${guard_socket}" "${guard_session}"; then
+        tmux -S "${guard_socket}" kill-session -t "${guard_session}" >/dev/null 2>&1 || true
+      fi
     fi
   fi
 
@@ -288,9 +318,15 @@ prewarm_guard_session() {
   local i=0
   local wait_sec="${STACK_PREWARM_WAIT_SECONDS}"
   while [[ "${i}" -lt "${wait_sec}" ]]; do
-    if tmux -S "${guard_socket}" has-session -t "${guard_session}" 2>/dev/null && guard_session_healthy "${guard_socket}" "${guard_session}"; then
-      echo "guard_session_ready:${guard_session}@${guard_socket}"
-      return 0
+    if tmux -S "${guard_socket}" has-session -t "${guard_session}" 2>/dev/null; then
+      if guard_session_healthy "${guard_socket}" "${guard_session}"; then
+        echo "guard_session_ready:${guard_session}@${guard_socket}"
+        return 0
+      fi
+      if [[ "${STACK_GUARD_STRICT_HEALTH}" != "1" ]] && guard_session_soft_ready "${guard_socket}" "${guard_session}"; then
+        echo "guard_session_ready_soft:${guard_session}@${guard_socket}"
+        return 0
+      fi
     fi
     sleep 1
     i=$((i + 1))
@@ -439,9 +475,9 @@ start_stack() {
   [[ -f "${BRIDGE_LOG}" ]] && mv -f "${BRIDGE_LOG}" "${BRIDGE_LOG}.${ts}.bak"
 
   local api_cmd bridge_cmd
-  api_cmd="cd ${ROOT_DIR} && while true; do env PYTHONPATH=${ROOT_DIR}/src FQG_HOST=${HOST} FQG_PORT=${PORT} FQG_CALLBACK_BASE_URL=${BASE_URL} FQG_IDENTITY_ROUTES_PATH=${routes_path} FQG_CHAT_LEADER_IDENTITY_ID=${LEADER_ID} FQG_CHAT_COLLAB_IDENTITY_ID=${COLLAB_ID} FQG_CHAT_CONTROL_TIMEOUT_SECONDS=${FQG_CHAT_CONTROL_TIMEOUT_SECONDS:-120} FQG_CHAT_DEFAULT_VERIFY_SECONDS=${FQG_CHAT_DEFAULT_VERIFY_SECONDS:-8} FQG_DISABLE_AGENTS_ADD_DIR=${FQG_DISABLE_AGENTS_ADD_DIR:-1} FQG_TRUSTED_BRIDGE_DECISION_TOKEN=${FQG_TRUSTED_BRIDGE_DECISION_TOKEN:-} ${PYTHON_BIN} -m uvicorn tosee_birder.main:create_app --factory --host ${HOST} --port ${PORT} >> ${API_LOG} 2>&1; exit_code=\$?; echo \"\$(date '+%F %T') api_process_exit code=\${exit_code} restart_in=2s\" >> ${API_LOG}; sleep 2; done"
+  api_cmd="cd ${ROOT_DIR} && while true; do env PYTHONPATH=${ROOT_DIR}/src FQG_HOST=${HOST} FQG_PORT=${PORT} FQG_CALLBACK_BASE_URL=${BASE_URL} FQG_IDENTITY_ROUTES_PATH=${routes_path} FQG_CHAT_LEADER_IDENTITY_ID=${LEADER_ID} FQG_CHAT_COLLAB_IDENTITY_ID=${COLLAB_ID} FQG_CHAT_CONTROL_TIMEOUT_SECONDS=${FQG_CHAT_CONTROL_TIMEOUT_SECONDS:-120} FQG_CHAT_DEFAULT_VERIFY_SECONDS=${FQG_CHAT_DEFAULT_VERIFY_SECONDS:-20} FQG_NEW_SESSION_WARMUP_SECONDS=${LOCAL_STACK_REQUEST_WARMUP_SECONDS} FQG_NEW_SESSION_WARMUP_FAIL_CLOSE=${LOCAL_STACK_REQUEST_WARMUP_FAIL_CLOSE} FQG_DISABLE_AGENTS_ADD_DIR=${FQG_DISABLE_AGENTS_ADD_DIR:-1} FQG_TRUSTED_BRIDGE_DECISION_TOKEN=${FQG_TRUSTED_BRIDGE_DECISION_TOKEN:-} ${PYTHON_BIN} -m uvicorn tosee_birder.main:create_app --factory --host ${HOST} --port ${PORT} >> ${API_LOG} 2>&1; exit_code=\$?; echo \"\$(date '+%F %T') api_process_exit code=\${exit_code} restart_in=2s\" >> ${API_LOG}; sleep 2; done"
 
-  bridge_cmd="cd ${ROOT_DIR} && while true; do env PYTHONPATH=${ROOT_DIR}/src FQG_DINGTALK_STREAM_CLIENT_ID=${CLIENT_ID} FQG_DINGTALK_STREAM_CLIENT_SECRET=${CLIENT_SECRET} FQG_BRIDGE_BASE_URL=${BASE_URL} FQG_IDENTITY_ROUTES_PATH=${routes_path} FQG_CHAT_LEADER_IDENTITY_ID=${LEADER_ID} FQG_BRIDGE_REQUIRED_BASE_URL_PREFIX=${FQG_BRIDGE_REQUIRED_BASE_URL_PREFIX:-http://127.0.0.1:} FQG_BRIDGE_REQUIRED_CODEX_HOME_PREFIX=${FQG_BRIDGE_REQUIRED_CODEX_HOME_PREFIX:-${ROOT_DIR}/.runtime/codex_isolated} FQG_BRIDGE_STRICT_PROGRESS=${FQG_BRIDGE_STRICT_PROGRESS:-1} FQG_BRIDGE_TIMEOUT_SECONDS=${FQG_BRIDGE_TIMEOUT_SECONDS:-120} FQG_BRIDGE_AUTO_COLLAB=${FQG_BRIDGE_AUTO_COLLAB:-0} FQG_BRIDGE_REQUIRE_AT=${FQG_BRIDGE_REQUIRE_AT:-0} FQG_BRIDGE_REQUIRE_PREFIX=${FQG_BRIDGE_REQUIRE_PREFIX:-0} FQG_BRIDGE_COMMAND_PREFIXES=${FQG_BRIDGE_COMMAND_PREFIXES:-/run,/cmd} FQG_BRIDGE_ALLOW_USER_IDS=${FQG_BRIDGE_ALLOW_USER_IDS:-} FQG_BRIDGE_ALLOW_CHAT_IDS=${FQG_BRIDGE_ALLOW_CHAT_IDS:-} FQG_BRIDGE_FOLLOWUP_SECONDS=${FQG_BRIDGE_FOLLOWUP_SECONDS:-8} FQG_BRIDGE_PROGRESS_PUSH_COUNT=${FQG_BRIDGE_PROGRESS_PUSH_COUNT:-3} FQG_BRIDGE_COMPLETION_WAIT_SECONDS=${FQG_BRIDGE_COMPLETION_WAIT_SECONDS:-45} FQG_BRIDGE_COMPLETION_POLL_SECONDS=${FQG_BRIDGE_COMPLETION_POLL_SECONDS:-3} FQG_BRIDGE_COMPLETION_MAX_WAIT_SECONDS=${FQG_BRIDGE_COMPLETION_MAX_WAIT_SECONDS:-300} FQG_BRIDGE_REPLY_RETRY_ATTEMPTS=${FQG_BRIDGE_REPLY_RETRY_ATTEMPTS:-4} FQG_BRIDGE_REPLY_RETRY_BASE_DELAY_SECONDS=${FQG_BRIDGE_REPLY_RETRY_BASE_DELAY_SECONDS:-0.8} FQG_BRIDGE_REPLY_RETRY_MAX_DELAY_SECONDS=${FQG_BRIDGE_REPLY_RETRY_MAX_DELAY_SECONDS:-6} FQG_BRIDGE_ENABLE_IDENTITY_REFUSAL_FALLBACK=${FQG_BRIDGE_ENABLE_IDENTITY_REFUSAL_FALLBACK:-0} FQG_BRIDGE_ACTIVITY_IDLE_RESTART_SECONDS=${FQG_BRIDGE_ACTIVITY_IDLE_RESTART_SECONDS:-600} FQG_BRIDGE_FORCE_RESTART_MAX_UPTIME_SECONDS=${FQG_BRIDGE_FORCE_RESTART_MAX_UPTIME_SECONDS:-7200} FQG_BRIDGE_HEARTBEAT_FILE=${FQG_BRIDGE_HEARTBEAT_FILE:-${BRIDGE_HEARTBEAT_FILE_DEFAULT}} FQG_BRIDGE_HEARTBEAT_WRITE_INTERVAL_SECONDS=${FQG_BRIDGE_HEARTBEAT_WRITE_INTERVAL_SECONDS:-5} FQG_BRIDGE_TRUSTED_DECISION_TOKEN=${FQG_BRIDGE_TRUSTED_DECISION_TOKEN:-${FQG_TRUSTED_BRIDGE_DECISION_TOKEN:-}} FQG_BRIDGE_APPROVER=${FQG_BRIDGE_APPROVER:-guixianren-bridge} ${PYTHON_BIN} scripts/run_dingtalk_stream_bridge.py >> ${BRIDGE_LOG} 2>&1; exit_code=\$?; echo \"\$(date '+%F %T') bridge_process_exit code=\${exit_code} restart_in=2s\" >> ${BRIDGE_LOG}; sleep 2; done"
+  bridge_cmd="cd ${ROOT_DIR} && while true; do env PYTHONPATH=${ROOT_DIR}/src FQG_DINGTALK_STREAM_CLIENT_ID=${CLIENT_ID} FQG_DINGTALK_STREAM_CLIENT_SECRET=${CLIENT_SECRET} FQG_BRIDGE_BASE_URL=${BASE_URL} FQG_IDENTITY_ROUTES_PATH=${routes_path} FQG_CHAT_LEADER_IDENTITY_ID=${LEADER_ID} FQG_BRIDGE_REQUIRED_BASE_URL_PREFIX=${FQG_BRIDGE_REQUIRED_BASE_URL_PREFIX:-http://127.0.0.1:} FQG_BRIDGE_REQUIRED_CODEX_HOME_PREFIX=${FQG_BRIDGE_REQUIRED_CODEX_HOME_PREFIX:-${ROOT_DIR}/.runtime/codex_isolated} FQG_BRIDGE_STRICT_PROGRESS=${FQG_BRIDGE_STRICT_PROGRESS:-1} FQG_BRIDGE_TIMEOUT_SECONDS=${FQG_BRIDGE_TIMEOUT_SECONDS:-120} FQG_BRIDGE_AUTO_COLLAB=${FQG_BRIDGE_AUTO_COLLAB:-0} FQG_BRIDGE_REQUIRE_AT=${FQG_BRIDGE_REQUIRE_AT:-0} FQG_BRIDGE_REQUIRE_PREFIX=${FQG_BRIDGE_REQUIRE_PREFIX:-0} FQG_BRIDGE_COMMAND_PREFIXES=${FQG_BRIDGE_COMMAND_PREFIXES:-/run,/cmd} FQG_BRIDGE_ALLOW_USER_IDS=${FQG_BRIDGE_ALLOW_USER_IDS:-} FQG_BRIDGE_ALLOW_CHAT_IDS=${FQG_BRIDGE_ALLOW_CHAT_IDS:-} FQG_BRIDGE_VERIFY_SECONDS=${FQG_BRIDGE_VERIFY_SECONDS:-20} FQG_BRIDGE_COLLAB_VERIFY_SECONDS=${FQG_BRIDGE_COLLAB_VERIFY_SECONDS:-20} FQG_BRIDGE_FOLLOWUP_SECONDS=${FQG_BRIDGE_FOLLOWUP_SECONDS:-8} FQG_BRIDGE_PROGRESS_PUSH_COUNT=${FQG_BRIDGE_PROGRESS_PUSH_COUNT:-3} FQG_BRIDGE_COMPLETION_WAIT_SECONDS=${FQG_BRIDGE_COMPLETION_WAIT_SECONDS:-45} FQG_BRIDGE_COMPLETION_POLL_SECONDS=${FQG_BRIDGE_COMPLETION_POLL_SECONDS:-3} FQG_BRIDGE_COMPLETION_MAX_WAIT_SECONDS=${FQG_BRIDGE_COMPLETION_MAX_WAIT_SECONDS:-300} FQG_BRIDGE_REPLY_RETRY_ATTEMPTS=${FQG_BRIDGE_REPLY_RETRY_ATTEMPTS:-4} FQG_BRIDGE_REPLY_RETRY_BASE_DELAY_SECONDS=${FQG_BRIDGE_REPLY_RETRY_BASE_DELAY_SECONDS:-0.8} FQG_BRIDGE_REPLY_RETRY_MAX_DELAY_SECONDS=${FQG_BRIDGE_REPLY_RETRY_MAX_DELAY_SECONDS:-6} FQG_BRIDGE_ENABLE_IDENTITY_REFUSAL_FALLBACK=${FQG_BRIDGE_ENABLE_IDENTITY_REFUSAL_FALLBACK:-0} FQG_BRIDGE_ACTIVITY_IDLE_RESTART_SECONDS=${FQG_BRIDGE_ACTIVITY_IDLE_RESTART_SECONDS:-1800} FQG_BRIDGE_FORCE_RESTART_MAX_UPTIME_SECONDS=${FQG_BRIDGE_FORCE_RESTART_MAX_UPTIME_SECONDS:-7200} FQG_BRIDGE_HEARTBEAT_FILE=${FQG_BRIDGE_HEARTBEAT_FILE:-${BRIDGE_HEARTBEAT_FILE_DEFAULT}} FQG_BRIDGE_HEARTBEAT_WRITE_INTERVAL_SECONDS=${FQG_BRIDGE_HEARTBEAT_WRITE_INTERVAL_SECONDS:-5} FQG_BRIDGE_TRUSTED_DECISION_TOKEN=${FQG_BRIDGE_TRUSTED_DECISION_TOKEN:-${FQG_TRUSTED_BRIDGE_DECISION_TOKEN:-}} FQG_BRIDGE_APPROVER=${FQG_BRIDGE_APPROVER:-guixianren-bridge} ${PYTHON_BIN} scripts/run_dingtalk_stream_bridge.py >> ${BRIDGE_LOG} 2>&1; exit_code=\$?; echo \"\$(date '+%F %T') bridge_process_exit code=\${exit_code} restart_in=2s\" >> ${BRIDGE_LOG}; sleep 2; done"
 
   tmux_start_session "${API_SESSION}" "${api_cmd}"
   sleep 1
@@ -465,8 +501,11 @@ start_stack() {
       reset_guard_server_for_leader "${routes_path}" || true
     fi
     if ! prewarm_guard_session "${routes_path}"; then
-      echo "guard_prewarm_failed_for_leader:${LEADER_ID}" >&2
-      exit 1
+      if [[ "${STACK_PREWARM_REQUIRED}" == "1" ]]; then
+        echo "guard_prewarm_failed_for_leader:${LEADER_ID}" >&2
+        exit 1
+      fi
+      echo "guard_prewarm_warn_only:${LEADER_ID}" >&2
     fi
   fi
   if ! wait_bridge_ready "${STACK_BRIDGE_READY_WAIT_SECONDS}"; then
@@ -497,16 +536,22 @@ Environment overrides:
   FQG_CHAT_COLLAB_IDENTITY_ID (default: same as leader)
   FQG_DINGTALK_STREAM_CLIENT_ID / FQG_DINGTALK_STREAM_CLIENT_SECRET
   FQG_BRIDGE_REQUIRE_AT (default: 0, can set 1 for group @bot fail-close)
-  FQG_BRIDGE_ACTIVITY_IDLE_RESTART_SECONDS (default: 600)
+  FQG_BRIDGE_ACTIVITY_IDLE_RESTART_SECONDS (default: 1800)
+  FQG_BRIDGE_MIN_IDLE_RESTART_SECONDS (default: 1800)
   FQG_BRIDGE_FORCE_RESTART_MAX_UPTIME_SECONDS (default: 7200)
   FQG_BRIDGE_ALLOW_IDLE_RESTART_ZERO (default: 0; set 1 only for explicit troubleshooting)
+  FQG_BRIDGE_ALLOW_IDLE_RESTART_SHORT (default: 0; set 1 to allow idle restart below min)
   FQG_BRIDGE_HEARTBEAT_FILE (default: ${RUNTIME_DIR}/bridge_heartbeat.json)
   FQG_BRIDGE_HEARTBEAT_WRITE_INTERVAL_SECONDS (default: 5)
   FQG_TRUSTED_BRIDGE_DECISION_TOKEN (enables bot text approve/reject)
   FQG_BRIDGE_APPROVER (default: guixianren-bridge)
   FQG_STACK_PREWARM_ENABLE (default: 1)
+  FQG_STACK_PREWARM_REQUIRED (default: 0; set 1 to fail-close on prewarm failure)
   FQG_STACK_PREWARM_WAIT_SECONDS (default: 25)
   FQG_STACK_BRIDGE_READY_WAIT_SECONDS (default: 20)
+  FQG_STACK_GUARD_STRICT_HEALTH (default: 0; set 1 to keep strict pane command gating)
+  FQG_LOCAL_STACK_REQUEST_WARMUP_SECONDS (default: 0; per-request warmup budget in guarded control)
+  FQG_LOCAL_STACK_REQUEST_WARMUP_FAIL_CLOSE (default: 0; fail-close when per-request warmup marker missing)
   FQG_STACK_FORCE_RESET_GUARD_SERVER_ON_START (default: 1; restart/start only)
   prewarm: ensure leader guard tmux/codex session is alive without restarting api/bridge
 EOF

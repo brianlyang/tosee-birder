@@ -52,6 +52,11 @@ Owner: `feiqiao-guard-delivery-lead`
 ./scripts/local_dingtalk_tmux_stack.sh restart
 ```
 
+关键默认值（避免 guard 误杀）：
+
+- `FQG_STACK_GUARD_STRICT_HEALTH=0`（默认，允许 soft-ready，不因 pane 命令瞬时漂移杀会话）
+- `FQG_NEW_SESSION_WARMUP_FAIL_CLOSE=1` 时需同时保证 warmup marker 可达，否则会长期 `queued`
+
 2. 三平面健康检查
 
 ```bash
@@ -114,7 +119,12 @@ tail -n 120 .runtime/local_bridge/api.log
 - 先确认是否连续有 `dispatch_progress`。
 - 若停在 `turn_settled`，切换到单题收口 skill。
 
-3. route 漂移
+3. guard prewarm 高频 not_ready
+- 先确认 `supervisor.log` 是否出现 `guard_session_ready_soft`（这是新稳态）。
+- 若仍有高频 `guard_session_not_ready`，检查是否错误开启 `FQG_STACK_GUARD_STRICT_HEALTH=1`。
+- warmup marker 长期不可达时，优先修正 marker/prompt 契约，不要通过硬编码绕过。
+
+4. route 漂移
 - `/v1/chat/routes` 中目标 identity 的 `route_status` 必须是 `ok`。
 - 有 `route_error` 直接 fail-close，不继续压测。
 

@@ -369,15 +369,15 @@ def main() -> int:
     for idx, (slot, token) in enumerate(memory_slots[:5], start=1):
         marker = f"X{idx:02d}-{ts()[-4:]}"
         cross_case_name = f"CASE{22+idx:02d}_cross_entry_recall_{idx:02d}"
+        text = (
+            f"跨入口读取{idx}：读取槽位 {slot}。"
+            f"只回复 {marker} VALUE <槽位值>，不要输出其他字符。"
+        )
         announce_case_start(
             cross_case_name,
             f"跨入口读取槽位 {slot} 并校验值",
             prompt_text=text,
             expected=f"{marker} VALUE {token}",
-        )
-        text = (
-            f"跨入口读取{idx}：读取槽位 {slot}。"
-            f"只回复 {marker} VALUE <槽位值>，不要输出其他字符。"
         )
         if ONLINE_MODE:
             remote_cmd = (

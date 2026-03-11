@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
+CURL_MAX_TIME_SECONDS="${FQG_LIVE_CURL_MAX_TIME_SECONDS:-20}"
+CURL_POST_MAX_TIME_SECONDS="${FQG_LIVE_POST_MAX_TIME_SECONDS:-130}"
 
 ts() {
   date '+%Y%m%d_%H%M%S'
@@ -20,7 +22,12 @@ poll_marker() {
   local i
   for i in $(seq 1 "${max_rounds}"); do
     local snap="${OUT}/${prefix}_${i}.json"
-    curl -sS http://127.0.0.1:3001/v1/chat/leader/snapshot >"${snap}"
+    if ! curl -sS --connect-timeout 3 --max-time "${CURL_MAX_TIME_SECONDS}" \
+      http://127.0.0.1:3001/v1/chat/leader/snapshot >"${snap}"; then
+      echo "poll_marker_snapshot_curl_failed round=${i}" >>"${OUT}/${prefix}_errors.log"
+      sleep 2
+      continue
+    fi
     local msg
     msg="$(get_last_msg "${snap}")"
     if echo "${msg}" | rg -q "^${marker}"; then
@@ -35,9 +42,32 @@ poll_marker() {
 send_leader() {
   local payload="$1"
   local out="$2"
-  curl -sS -X POST http://127.0.0.1:3001/v1/chat/leader/command \
+  curl -sS --connect-timeout 3 --max-time "${CURL_POST_MAX_TIME_SECONDS}" -X POST http://127.0.0.1:3001/v1/chat/leader/command \
     -H "Content-Type: application/json" \
-    --data-binary @"${payload}" >"${out}"
+    --data-binary @"${payload}" >"${out}" || {
+      echo "{\"accepted\":false,\"error\":\"leader_command_curl_failed\"}" >"${out}"
+      return 1
+    }
+}
+
+collect_delivery_from_responses() {
+  local accepted="false"
+  local state=""
+  local file=""
+  for file in "$@"; do
+    [[ -f "${file}" ]] || continue
+    local a
+    local s
+    a="$(jq -r '.accepted==true' "${file}" 2>/dev/null || echo "false")"
+    s="$(jq -r '.leader_result.delivery_state // ""' "${file}" 2>/dev/null || echo "")"
+    if [[ "${a}" == "true" ]]; then
+      accepted="true"
+      if [[ -n "${s}" && "${s}" != "null" ]]; then
+        state="${s}"
+      fi
+    fi
+  done
+  echo "${accepted}|${state}"
 }
 
 DAY="$(date +%Y-%m-%d)"
@@ -45,9 +75,12 @@ RUN_TS="$(ts)"
 OUT="artifacts/ops/${DAY}/live_realrun_${RUN_TS}"
 mkdir -p "${OUT}"
 
-curl -sS http://127.0.0.1:3001/healthz >"${OUT}/healthz.json"
-curl -sS http://127.0.0.1:3001/v1/chat/routes >"${OUT}/routes.json"
-curl -sS http://127.0.0.1:3001/v1/chat/leader/snapshot >"${OUT}/snapshot_before.json"
+curl -sS --connect-timeout 3 --max-time "${CURL_MAX_TIME_SECONDS}" \
+  http://127.0.0.1:3001/healthz >"${OUT}/healthz.json"
+curl -sS --connect-timeout 3 --max-time "${CURL_MAX_TIME_SECONDS}" \
+  http://127.0.0.1:3001/v1/chat/routes >"${OUT}/routes.json"
+curl -sS --connect-timeout 3 --max-time "${CURL_MAX_TIME_SECONDS}" \
+  http://127.0.0.1:3001/v1/chat/leader/snapshot >"${OUT}/snapshot_before.json"
 
 TOKEN="TOK-${RUN_TS: -6}"
 M1="LIVEW-${RUN_TS: -4}"
@@ -56,7 +89,7 @@ M2="LIVER-${RUN_TS: -4}"
 cat >"${OUT}/write_payload.json" <<JSON
 {"message":"实跑写入：请记住口令 ${TOKEN}。只回复 ${M1} ACK ${TOKEN}","auto_collab":false,"verify_seconds":20,"metadata":{"channel":"selftest","task_tag":"live_realrun_${RUN_TS}","case":"write"}}
 JSON
-send_leader "${OUT}/write_payload.json" "${OUT}/write_response.json"
+send_leader "${OUT}/write_payload.json" "${OUT}/write_response.json" || true
 
 WRITE_SEEN=0
 if poll_marker "${M1} ACK ${TOKEN}" 20 "snapshot_write"; then
@@ -66,7 +99,7 @@ else
     cat >"${OUT}/write_retry_${r}.json" <<JSON
 {"message":"继续执行上一条写入口令任务，不要解释。只回复 ${M1} ACK ${TOKEN}","auto_collab":false,"verify_seconds":20,"metadata":{"channel":"selftest","task_tag":"live_realrun_${RUN_TS}","case":"write_retry_${r}"}}
 JSON
-    send_leader "${OUT}/write_retry_${r}.json" "${OUT}/write_retry_resp_${r}.json"
+    send_leader "${OUT}/write_retry_${r}.json" "${OUT}/write_retry_resp_${r}.json" || true
     if poll_marker "${M1} ACK ${TOKEN}" 20 "snapshot_write_retry_${r}"; then
       WRITE_SEEN=1
       break
@@ -77,7 +110,7 @@ fi
 cat >"${OUT}/recall_payload.json" <<JSON
 {"message":"实跑读取：请只回答刚才口令，不要解释。只回复 ${M2} VALUE <口令>","auto_collab":false,"verify_seconds":20,"metadata":{"channel":"selftest","task_tag":"live_realrun_${RUN_TS}","case":"recall"}}
 JSON
-send_leader "${OUT}/recall_payload.json" "${OUT}/recall_response.json"
+send_leader "${OUT}/recall_payload.json" "${OUT}/recall_response.json" || true
 
 RECALL_SEEN=0
 RECALLED=""
@@ -90,7 +123,7 @@ else
     cat >"${OUT}/recall_retry_${r}.json" <<JSON
 {"message":"继续执行上一条读取任务，不要解释。只回复 ${M2} VALUE <口令>","auto_collab":false,"verify_seconds":20,"metadata":{"channel":"selftest","task_tag":"live_realrun_${RUN_TS}","case":"recall_retry_${r}"}}
 JSON
-    send_leader "${OUT}/recall_retry_${r}.json" "${OUT}/recall_retry_resp_${r}.json"
+    send_leader "${OUT}/recall_retry_${r}.json" "${OUT}/recall_retry_resp_${r}.json" || true
     if poll_marker "${M2} VALUE" 20 "snapshot_recall_retry_${r}"; then
       RECALL_SEEN=1
       MSG="$(cat "${OUT}/snapshot_recall_retry_${r}_seen_message.txt")"
@@ -100,14 +133,24 @@ JSON
   done
 fi
 
-curl -sS http://127.0.0.1:3001/v1/identity/memory/feiqiao-guard-delivery-lead >"${OUT}/memory.json"
+curl -sS --connect-timeout 3 --max-time "${CURL_MAX_TIME_SECONDS}" \
+  http://127.0.0.1:3001/v1/identity/memory/feiqiao-guard-delivery-lead >"${OUT}/memory.json"
 
 HEALTH_OK="$(jq -r '.status=="ok"' "${OUT}/healthz.json")"
 ROUTE_OK="$(jq -r '.items[] | select(.identity_id=="feiqiao-guard-delivery-lead") | ((.route_status=="ok") and (.session_id!=null) and (.codex_home!=null))' "${OUT}/routes.json" | head -n1)"
-WRITE_ACCEPTED="$(jq -r '.accepted==true' "${OUT}/write_response.json")"
-WRITE_STATE="$(jq -r '.leader_result.delivery_state // ""' "${OUT}/write_response.json")"
-RECALL_ACCEPTED="$(jq -r '.accepted==true' "${OUT}/recall_response.json")"
-RECALL_STATE="$(jq -r '.leader_result.delivery_state // ""' "${OUT}/recall_response.json")"
+WRITE_DELIVERY="$(collect_delivery_from_responses \
+  "${OUT}/write_response.json" \
+  "${OUT}/write_retry_resp_1.json" \
+  "${OUT}/write_retry_resp_2.json")"
+WRITE_ACCEPTED="${WRITE_DELIVERY%%|*}"
+WRITE_STATE="${WRITE_DELIVERY#*|}"
+
+RECALL_DELIVERY="$(collect_delivery_from_responses \
+  "${OUT}/recall_response.json" \
+  "${OUT}/recall_retry_resp_1.json" \
+  "${OUT}/recall_retry_resp_2.json")"
+RECALL_ACCEPTED="${RECALL_DELIVERY%%|*}"
+RECALL_STATE="${RECALL_DELIVERY#*|}"
 RETURNS_60="$(jq -r '.returned_turns==60' "${OUT}/memory.json")"
 TIER_OK="$(jq -r '(.tier_counts.fresh==20 and .tier_counts.stable==20 and .tier_counts.archive==20)' "${OUT}/memory.json")"
 

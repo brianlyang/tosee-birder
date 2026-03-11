@@ -253,7 +253,16 @@ def test_continue_once_new_session_warmup_fail_close_blocks_dispatch() -> None:
         sends.append(text)
         return subprocess.CompletedProcess(args=["tmux"], returncode=0, stdout="", stderr="")
 
-    def _stub_wait_marker(*, tmux_bin, socket_path, session_name, marker, timeout_seconds, poll_interval_seconds=2.0):
+    def _stub_wait_marker(
+        *,
+        tmux_bin,
+        socket_path,
+        session_name,
+        marker,
+        timeout_seconds,
+        poll_interval_seconds=2.0,
+        strict_line_match=False,
+    ):
         return False, "no marker"
 
     control._tmux_send_keys = _stub_send  # type: ignore[assignment]
@@ -308,3 +317,111 @@ def test_pane_signal_without_marker_keeps_original_heuristic() -> None:
     text = "继续执行"
     delta = "• 已继续执行并完成本轮。"
     assert control._pane_delta_has_agent_signal(delta, text=text) is True
+
+
+def test_wait_tmux_marker_strict_line_match_ignores_prompt_echo() -> None:
+    original_capture = control._tmux_capture_tail
+    try:
+        control._tmux_capture_tail = (  # type: ignore[assignment]
+            lambda tmux_bin, socket_path, session_name, start_line=-260: (
+                "完成后仅输出一行：STEP0_RESULT=READY。"
+            )
+        )
+        ok, _ = control._wait_tmux_marker(
+            tmux_bin="tmux",
+            socket_path=Path("/tmp/fqg-test.sock"),
+            session_name="fqg-019cb379",
+            marker="STEP0_RESULT=READY",
+            timeout_seconds=1.0,
+            poll_interval_seconds=0.1,
+            strict_line_match=True,
+        )
+        assert ok is False
+
+        ok_loose, _ = control._wait_tmux_marker(
+            tmux_bin="tmux",
+            socket_path=Path("/tmp/fqg-test.sock"),
+            session_name="fqg-019cb379",
+            marker="STEP0_RESULT=READY",
+            timeout_seconds=1.0,
+            poll_interval_seconds=0.1,
+            strict_line_match=False,
+        )
+        assert ok_loose is True
+    finally:
+        control._tmux_capture_tail = original_capture  # type: ignore[assignment]
+
+
+def test_continue_once_recreates_session_when_new_resume_disappears() -> None:
+    sid = "019cb379-59ff-72f1-9380-2e1b687257a6"
+    before_sig = control.RolloutSignature(rollout_path="/tmp/a.jsonl", size=10, mtime_ns=1)
+    after_sig = control.RolloutSignature(rollout_path="/tmp/a.jsonl", size=22, mtime_ns=2)
+    calls = {"start_resume": 0, "wait": 0}
+
+    original_ensure_tmux_exists = control._ensure_tmux_exists
+    original_tmux_socket_for_sid = control._tmux_socket_for_sid
+    original_tmux_session_name = control._tmux_session_name
+    original_capture_rollout_signature = control._capture_rollout_signature
+    original_tmux_has_session = control._tmux_has_session
+    original_tmux_start_resume = control._tmux_start_resume
+    original_wait_rollout_advance = control._wait_rollout_advance
+    original_tmux_send_keys = control._tmux_send_keys
+    original_tmux_press_enter = control._tmux_press_enter
+    original_tmux_capture_tail = control._tmux_capture_tail
+
+    control._ensure_tmux_exists = lambda: "tmux"  # type: ignore[assignment]
+    control._tmux_socket_for_sid = lambda codex_home, session_id: Path("/tmp/fqg-test.sock")  # type: ignore[assignment]
+    control._tmux_session_name = lambda session_id, prefix: "fqg-019cb379"  # type: ignore[assignment]
+    control._capture_rollout_signature = lambda codex_home, session_id: before_sig  # type: ignore[assignment]
+    control._tmux_has_session = lambda tmux_bin, socket_path, session_name: False  # type: ignore[assignment]
+
+    def _stub_start_resume(tmux_bin, **kwargs):
+        calls["start_resume"] += 1
+        return subprocess.CompletedProcess(args=["tmux"], returncode=0, stdout="", stderr="")
+
+    def _stub_wait(*, codex_home, session_id, before, timeout_seconds, poll_interval_seconds=0.5):
+        calls["wait"] += 1
+        if calls["wait"] == 1:
+            return False, before_sig
+        return True, after_sig
+
+    control._tmux_start_resume = _stub_start_resume  # type: ignore[assignment]
+    control._wait_rollout_advance = _stub_wait  # type: ignore[assignment]
+    control._tmux_send_keys = lambda *args, **kwargs: subprocess.CompletedProcess(  # type: ignore[assignment]
+        args=["tmux"], returncode=0, stdout="", stderr=""
+    )
+    control._tmux_press_enter = lambda *args, **kwargs: subprocess.CompletedProcess(  # type: ignore[assignment]
+        args=["tmux"], returncode=1, stdout="", stderr="no server"
+    )
+    control._tmux_capture_tail = lambda *args, **kwargs: ""  # type: ignore[assignment]
+
+    try:
+        rc, payload = control._continue_once(
+            root_dir=Path("/tmp"),
+            codex_home=Path("/tmp"),
+            session_id=sid,
+            text="继续执行",
+            verify_seconds=8.0,
+            session_name_prefix="fqg",
+            tmux_socket_path=None,
+            warmup_seconds=0.0,
+            warmup_prompt="",
+        )
+    finally:
+        control._ensure_tmux_exists = original_ensure_tmux_exists  # type: ignore[assignment]
+        control._tmux_socket_for_sid = original_tmux_socket_for_sid  # type: ignore[assignment]
+        control._tmux_session_name = original_tmux_session_name  # type: ignore[assignment]
+        control._capture_rollout_signature = original_capture_rollout_signature  # type: ignore[assignment]
+        control._tmux_has_session = original_tmux_has_session  # type: ignore[assignment]
+        control._tmux_start_resume = original_tmux_start_resume  # type: ignore[assignment]
+        control._wait_rollout_advance = original_wait_rollout_advance  # type: ignore[assignment]
+        control._tmux_send_keys = original_tmux_send_keys  # type: ignore[assignment]
+        control._tmux_press_enter = original_tmux_press_enter  # type: ignore[assignment]
+        control._tmux_capture_tail = original_tmux_capture_tail  # type: ignore[assignment]
+
+    assert rc == 0
+    assert payload["ok"] is True
+    assert payload["fallback_used"] is True
+    assert payload["action"] == "tmux_new_resume_recreate_direct"
+    assert calls["start_resume"] == 2
+    assert calls["wait"] == 2

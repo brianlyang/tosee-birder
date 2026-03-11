@@ -420,6 +420,66 @@ def test_is_terminal_snapshot_state() -> None:
     assert bridge._is_terminal_snapshot_state("RUNNING") is False
 
 
+def test_is_fresh_terminal_outcome_rejects_same_signature() -> None:
+    bridge = _load_bridge_module()
+    baseline_outcome = bridge._build_leader_outcome_signature(
+        state="STOPPED",
+        reply="old final",
+        last_summary="task_complete",
+    )
+    assert (
+        bridge._is_fresh_terminal_outcome(
+            baseline_signature="sig-1",
+            current_signature="sig-1",
+            baseline_outcome=baseline_outcome,
+            current_state="STOPPED",
+            current_reply="new final",
+            current_summary="task_complete",
+        )
+        is False
+    )
+
+
+def test_is_fresh_terminal_outcome_rejects_same_leader_outcome() -> None:
+    bridge = _load_bridge_module()
+    baseline_outcome = bridge._build_leader_outcome_signature(
+        state="STOPPED",
+        reply="old final",
+        last_summary="task_complete",
+    )
+    assert (
+        bridge._is_fresh_terminal_outcome(
+            baseline_signature="sig-1",
+            current_signature="sig-2",
+            baseline_outcome=baseline_outcome,
+            current_state="STOPPED",
+            current_reply="old final",
+            current_summary="task_complete",
+        )
+        is False
+    )
+
+
+def test_is_fresh_terminal_outcome_accepts_changed_leader_outcome() -> None:
+    bridge = _load_bridge_module()
+    baseline_outcome = bridge._build_leader_outcome_signature(
+        state="STOPPED",
+        reply="old final",
+        last_summary="task_complete",
+    )
+    assert (
+        bridge._is_fresh_terminal_outcome(
+            baseline_signature="sig-1",
+            current_signature="sig-2",
+            baseline_outcome=baseline_outcome,
+            current_state="DONE_WAITING_INPUT",
+            current_reply="FINAL_ANSWER: new final",
+            current_summary="task_complete",
+        )
+        is True
+    )
+
+
 def test_is_final_reply_ready_rejects_waiting_input_even_with_task_complete() -> None:
     bridge = _load_bridge_module()
     assert (
@@ -705,6 +765,46 @@ def test_extract_pane_signal_fallback_filters_noise_and_keeps_tail() -> None:
     assert "示例热搜A" in fallback
     assert "Called playwright" not in fallback
     assert "gpt-5.3-codex" not in fallback
+
+
+def test_evaluate_dispatch_acceptance_accepts_true_response() -> None:
+    bridge = _load_bridge_module()
+    accepted, reason = bridge._evaluate_dispatch_acceptance(
+        {
+            "accepted": True,
+            "leader_result": {"accepted": True, "delivery_state": "confirmed"},
+        }
+    )
+    assert accepted is True
+    assert reason == ""
+
+
+def test_evaluate_dispatch_acceptance_exposes_failure_reason() -> None:
+    bridge = _load_bridge_module()
+    accepted, reason = bridge._evaluate_dispatch_acceptance(
+        {
+            "accepted": False,
+            "leader_result": {"accepted": False, "delivery_state": "failed"},
+            "orchestration_notes": ["leader_delivery_state=failed", "collab_result_missing"],
+        }
+    )
+    assert accepted is False
+    assert "accepted=false" in reason
+    assert "leader_state=failed" in reason
+    assert "notes=leader_delivery_state=failed;collab_result_missing" in reason
+
+
+def test_evaluate_dispatch_acceptance_includes_collab_error() -> None:
+    bridge = _load_bridge_module()
+    accepted, reason = bridge._evaluate_dispatch_acceptance(
+        {
+            "accepted": False,
+            "leader_result": {"accepted": True, "delivery_state": "confirmed"},
+            "collab_error": "404:detail=collab route missing",
+        }
+    )
+    assert accepted is False
+    assert "collab_error=404:detail=collab route missing" in reason
 
 
 def test_startup_guard_rejects_progress_push_zero_under_strict_mode(tmp_path: Path) -> None:

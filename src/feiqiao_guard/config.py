@@ -51,6 +51,7 @@ class Settings:
     identity_routes_path: Path = Path(".runtime/identity_routes.json")
     chat_control_timeout_seconds: int = 20
     chat_default_verify_seconds: int = 8
+    chat_queue_retry_fail_close_unconfirmed: bool = False
     chat_leader_identity_id: str = "feiqiao-guard-delivery-lead"
     chat_collab_identity_id: str = "feiqiao-guard-collab-executor"
     dingtalk_paused_webhook_tokens: list[str] | None = None
@@ -89,6 +90,10 @@ def load_settings() -> Settings:
         identity_routes_path=Path(os.getenv("FQG_IDENTITY_ROUTES_PATH", ".runtime/identity_routes.json")),
         chat_control_timeout_seconds=_env_int("FQG_CHAT_CONTROL_TIMEOUT_SECONDS", 20),
         chat_default_verify_seconds=_env_int("FQG_CHAT_DEFAULT_VERIFY_SECONDS", 8),
+        chat_queue_retry_fail_close_unconfirmed=_env_bool(
+            "FQG_CHAT_QUEUE_RETRY_FAIL_CLOSE_UNCONFIRMED",
+            False,
+        ),
         chat_leader_identity_id=os.getenv("FQG_CHAT_LEADER_IDENTITY_ID", "feiqiao-guard-delivery-lead"),
         chat_collab_identity_id=os.getenv("FQG_CHAT_COLLAB_IDENTITY_ID", "feiqiao-guard-collab-executor"),
         dingtalk_paused_webhook_tokens=_env_list("FQG_DINGTALK_PAUSED_WEBHOOK_TOKENS"),
