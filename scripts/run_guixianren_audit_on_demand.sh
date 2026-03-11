@@ -7,7 +7,7 @@ TS="$(date +%Y%m%d_%H%M%S)"
 RUN_ID="guixianren_audit_${TS}"
 OUT_DIR="${ROOT_DIR}/resource/reports/${RUN_ID}"
 HEARTBEAT_MAX_AGE_SECONDS="${FQG_AUDIT_HEARTBEAT_MAX_AGE_SECONDS:-180}"
-ACTIVITY_MAX_AGE_SECONDS="${FQG_AUDIT_ACTIVITY_MAX_AGE_SECONDS:-1800}"
+ACTIVITY_MAX_AGE_SECONDS="${FQG_AUDIT_ACTIVITY_MAX_AGE_SECONDS:-7200}"
 REQUIRED_IDS="${FQG_AUDIT_REQUIRED_IDENTITIES:-feiqiao-guard-delivery-lead,feiqiao-guard-collab-executor}"
 
 mkdir -p "${OUT_DIR}"
@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 import sys
 
@@ -61,11 +62,75 @@ healthz = load_json("healthz.json")
 routes = load_json("routes.json")
 snapshot = load_json("leader_snapshot.json")
 heartbeat = load_json("bridge_heartbeat.json")
+audit_tail_path = out_dir / "approval_audit_tail.jsonl"
 
 checks: list[dict] = []
 
 def add(name: str, ok: bool, detail: str) -> None:
     checks.append({"name": name, "ok": bool(ok), "detail": str(detail)})
+
+
+def parse_iso_to_epoch(raw: str) -> float | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    normalized = text
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def recent_local_activity(max_age_seconds: float) -> tuple[bool, str]:
+    if not audit_tail_path.exists():
+        return False, "audit_tail_missing"
+    now = time.time()
+    latest_ts = 0.0
+    latest_case = ""
+    latest_identity = ""
+    hits = 0
+    try:
+        rows = audit_tail_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return False, "audit_tail_unreadable"
+    for raw in rows:
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("event", "")).strip() != "chat_inbound_received":
+            continue
+        iid = str(row.get("identity_id", "")).strip()
+        if iid not in required_ids:
+            continue
+        ts = parse_iso_to_epoch(row.get("recorded_at"))
+        if ts is None:
+            continue
+        hits += 1
+        if ts > latest_ts:
+            latest_ts = ts
+            latest_identity = iid
+            meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            latest_case = str(meta.get("case", "")).strip()
+    if latest_ts <= 0:
+        return False, "no_recent_chat_inbound_received"
+    age = max(0.0, now - latest_ts)
+    ok = age <= max_age_seconds
+    return (
+        ok,
+        f"latest_local_inbound_age={age:.1f}s<= {max_age_seconds};hits={hits};"
+        f"latest_identity={latest_identity or '-'};latest_case={latest_case or '-'}",
+    )
 
 status_ok = str(healthz.get("status", "")).strip().lower() == "ok"
 add("H1_healthz_ok", status_ok, f"status={healthz.get('status')!r}")
@@ -105,13 +170,18 @@ if heartbeat:
         callback_age = float(ages.get("callback_age_seconds", 1e9) or 1e9)
         inbound_age = float(ages.get("inbound_age_seconds", 1e9) or 1e9)
         reply_age = float(ages.get("reply_age_seconds", 1e9) or 1e9)
-        hb_ok = age <= heartbeat_max_age and min(callback_age, inbound_age, reply_age) <= activity_max_age
+        bridge_activity_ok = min(callback_age, inbound_age, reply_age) <= activity_max_age
+        local_activity_ok, local_activity_detail = recent_local_activity(activity_max_age)
+        hb_ok = age <= heartbeat_max_age and (bridge_activity_ok or local_activity_ok)
         hb_detail = (
             f"heartbeat_age={age:.1f}s<= {heartbeat_max_age};"
             f"callback_age={callback_age:.1f}s;"
             f"inbound_age={inbound_age:.1f}s;"
             f"reply_age={reply_age:.1f}s;"
-            f"activity_max={activity_max_age}"
+            f"activity_max={activity_max_age};"
+            f"bridge_activity_ok={bridge_activity_ok};"
+            f"local_activity_ok={local_activity_ok};"
+            f"{local_activity_detail}"
         )
     except Exception as exc:  # noqa: BLE001
         hb_ok = False

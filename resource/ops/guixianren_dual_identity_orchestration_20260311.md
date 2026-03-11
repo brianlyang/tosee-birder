@@ -67,6 +67,28 @@ cd /Users/yangxi/claude/codex_project/fqsh
 - `resource/reports/guixianren_audit_<timestamp>/audit_summary.md`
 - `resource/reports/guixianren_audit_<timestamp>/audit_report.json`
 
+审计窗口默认值：
+
+- `FQG_AUDIT_HEARTBEAT_MAX_AGE_SECONDS=180`
+- `FQG_AUDIT_ACTIVITY_MAX_AGE_SECONDS=7200`
+
+说明：
+
+- 优先使用 DingTalk callback/inbound/reply 新鲜度；
+- 若 callback 暂时静默，但最近存在本地双实例 `chat_inbound_received` 证据，也可判活动有效。
+
+4. 双实例深度回归（30用例）
+
+```bash
+cd /Users/yangxi/claude/codex_project/fqsh
+python3 scripts/run_dual_identity_deep_suite.py
+```
+
+输出：
+
+- `artifacts/ops/<日期>/dual_identity_deep_suite_<timestamp>/summary.tsv`
+- `artifacts/ops/<日期>/dual_identity_deep_suite_<timestamp>/report.json`
+
 ## 5) 故障收口
 
 1. 如果 collab 显示错误 identity
